@@ -5,6 +5,7 @@
 #include "esp_partition.h"
 #include "spi_flash_mmap.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -309,6 +310,9 @@ void parse_weights(const emlm_t *data, const quant_t **wte, const quant_t **wpe,
 
 void generate(const emlm_t *data, const char *prompt, int max_tokens, float temperature, int top_k)
 {
+    int64_t t = esp_timer_get_time();
+    int64_t ttft = t;
+
     int h = data->hidden_size;
     int inter = data->intermediate_size;
     int nl = data->num_layers;
@@ -336,8 +340,7 @@ void generate(const emlm_t *data, const char *prompt, int max_tokens, float temp
     float *logits = malloc(data->vocab_size * sizeof(float));
     if (!k_cache || !v_cache || !logits)
     {
-        printf("alloc failed (need %d KB for kv cache)\n",
-               (int)(nl * cache_size * sizeof(float) * 2 / 1024));
+        printf("alloc failed (need %d KB for kv cache)\n", (int)(nl * cache_size * sizeof(float) * 2 / 1024));
         free(k_cache);
         free(v_cache);
         free(logits);
@@ -384,6 +387,8 @@ void generate(const emlm_t *data, const char *prompt, int max_tokens, float temp
 
             int next = sample_token(logits, data->vocab_size, temperature, top_k);
 
+            if (pos == 0) ttft = esp_timer_get_time() - t;
+
             char piece[64];
             detokenize(data, (uint16_t[]){(uint16_t)next}, 1, piece, sizeof(piece));
             printf("%s", piece);
@@ -398,7 +403,11 @@ void generate(const emlm_t *data, const char *prompt, int max_tokens, float temp
         }
     }
 
-    printf("\n[%d tokens generated]\n", generated);
+    printf("\n[%d tokens, %.2f tps, %.2fs to first token]\n", 
+        generated, 
+        generated / ((esp_timer_get_time() - t) / 1000000.0f), 
+        ttft / 1000000.0f
+    );
     free(k_cache);
     free(v_cache);
     free(logits);
@@ -410,7 +419,7 @@ void app_main(void)
         ESP_PARTITION_TYPE_DATA, 0x40, "emlm");
     if (!part)
     {
-        printf("Partition not found\n");
+        printf("partition not found\n");
         return;
     }
 
@@ -420,16 +429,19 @@ void app_main(void)
         part, 0, part->size, SPI_FLASH_MMAP_DATA, &mapped, &mmap_handle);
     if (err != ESP_OK)
     {
-        printf("Failed to mmap partition: %d\n", err);
+        printf("partition mmap failed: %s\n", esp_err_to_name(err));
         return;
     }
 
     const emlm_t *data = (const emlm_t *)mapped;
-    printf("EMLM: %c%c%c%c vocab=%u hidden=%u layers=%u heads=%u\n",
-           data->magic[0], data->magic[1], data->magic[2], data->magic[3],
-           data->vocab_size, data->hidden_size, data->num_layers, data->num_heads);
-    printf("KV cache: %d KB\n",
-           (int)(2 * data->num_layers * MAX_SEQ * data->hidden_size * sizeof(float) / 1024));
-
+    printf("%c%c%c%c vocab=%u hidden=%u layers=%u heads=%u\n",
+           data->magic[0],
+           data->magic[1],
+           data->magic[2],
+           data->magic[3],
+           data->vocab_size,
+           data->hidden_size,
+           data->num_layers,
+           data->num_heads);
     generate(data, "Once upon a time", 100, 0.5f, 40);
 }
