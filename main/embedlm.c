@@ -443,5 +443,5 @@ void app_main(void)
            data->hidden_size,
            data->num_layers,
            data->num_heads);
-    generate(data, "Once upon a time", 100, 0.5f, 40);
+    generate(data, "What is the largest organ in the body of the human?<|endoftext|>", 100, 0.5f, 40);
 }
