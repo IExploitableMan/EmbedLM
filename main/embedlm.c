@@ -39,7 +39,7 @@ typedef struct
     const float *fc_b, *proj_b;
 } layer_t;
 
-#define MAX_SEQ 128
+#define MAX_SEQ 256
 
 int tokenize(const emlm_t *data, const char *text, uint16_t *tokens, int max_len)
 {
@@ -182,7 +182,7 @@ void attention_kv(const float *x, const quant_t *q_w, const quant_t *k_w,
     for (int h = 0; h < num_heads; h++)
     {
         float *qh = q + h * head_dim;
-        float scores[pos + 1];
+        float scores[MAX_SEQ];
         float max_s = -1e9f;
 
         for (int t = 0; t <= pos; t++)
@@ -389,7 +389,7 @@ void generate(const emlm_t *data, const char *prompt, int max_tokens, float temp
 
             if (pos == 0) ttft = esp_timer_get_time() - t;
 
-            char piece[64];
+            char piece[1024];
             detokenize(data, (uint16_t[]){(uint16_t)next}, 1, piece, sizeof(piece));
             printf("%s", piece);
             fflush(stdout);
