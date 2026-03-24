@@ -32,8 +32,7 @@ for line in open("merges.txt", encoding="utf-8"):
 
 from transformers import AutoModelForCausalLM
 
-# ID = "roneneldan/TinyStories-1M"
-ID = "IExploitableMan/embedlm"
+ID = "roneneldan/TinyStories-1M"
 model = AutoModelForCausalLM.from_pretrained(ID)
 sd = model.state_dict()
 
