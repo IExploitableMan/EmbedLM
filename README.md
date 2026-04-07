@@ -5,13 +5,24 @@ Optimized inference engine for running quantized GPTNeo models directly on ESP32
 ## Quick Start
 
 ```bash
+# Create venv
+python -m venv .venv
+
+# Activate venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
 # Prepare and quantize the model
 python pack.py
 
-# Flash the firmware and the model weights
-idf.py build flash
-parttool.py write_partition --partition-name emlm --input emlm.bin
+# Flash the firmware
+pio run -t upload
+
+# Upload binary using crappy way
+python ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 115200 write_flash 0x400000 emlm.bin
 
 # Monitor output
-idf.py monitor
+pio device monitor
 ```

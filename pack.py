@@ -49,13 +49,13 @@ def f32(key):
 
 with open("emlm.bin", "wb") as f:
     f.write(b"EMLM")
-    f.write(struct.pack("<H", 50257))  # vocab size
-    f.write(struct.pack("<H", 2048))   # max position
-    f.write(struct.pack("<H", 64))     # hidden size
-    f.write(struct.pack("<H", 256))    # intermediate size
-    f.write(struct.pack("<H", 8))      # num layers
-    f.write(struct.pack("<H", 16))     # num heads
-    f.write(struct.pack("<H", len(merges)))  # num merges
+    f.write(struct.pack("<H", 50257))       # vocab size
+    f.write(struct.pack("<H", 2048))        # max position
+    f.write(struct.pack("<H", 64))          # hidden size
+    f.write(struct.pack("<H", 256))         # intermediate size
+    f.write(struct.pack("<H", 8))           # num layers
+    f.write(struct.pack("<H", 16))          # num heads
+    f.write(struct.pack("<H", len(merges))) # num merges
 
     for t in byte_to_token:
         f.write(struct.pack("<H", t))
