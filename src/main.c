@@ -1,447 +1,199 @@
+#include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-#include <math.h>
+#ifdef ESP_PLATFORM
+#include <esp_partition.h>
+#include <spi_flash_mmap.h>
+#else
 #include <stdlib.h>
-#include "esp_partition.h"
-#include "spi_flash_mmap.h"
-#include "esp_random.h"
-#include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#endif
 
 typedef struct
 {
-    uint8_t magic[4];
-    uint16_t vocab_size;
-    uint16_t max_pos;
-    uint16_t hidden_size;
-    uint16_t intermediate_size;
-    uint16_t num_layers;
-    uint16_t num_heads;
-    uint16_t num_merges;
-    uint16_t byte_to_token[256];
-    uint8_t token_to_byte[256];
-    uint32_t merges[];
-} __attribute__((packed)) emlm_t;
+    uint32_t magic;
+    uint32_t version;
+    uint64_t tensor_count;
+    uint64_t metadata_kv_count;
+    uint8_t data[];
+} gguf_t;
 
-typedef struct
+typedef struct {
+    uint64_t len;
+    const char *data;
+} gguf_string_t;
+
+typedef enum {
+    GGUF_UINT8   = 0,
+    GGUF_INT8    = 1,
+    GGUF_UINT16  = 2,
+    GGUF_INT16   = 3,
+    GGUF_UINT32  = 4,
+    GGUF_INT32   = 5,
+    GGUF_FLOAT32 = 6,
+    GGUF_BOOL    = 7,
+    GGUF_STRING  = 8,
+    GGUF_ARRAY   = 9,
+    GGUF_UINT64  = 10,
+    GGUF_INT64   = 11,
+    GGUF_FLOAT64 = 12,
+} gguf_type_t;
+
+#define READ(type, p) ({ \
+    type v = *(const type*)(*(p)); \
+    *(p) += sizeof(type); \
+    v; \
+})
+
+char *load_gguf(const gguf_t **gguf)
 {
-    float scale;
-    int8_t w[];
-} __attribute__((packed)) quant_t;
+    const gguf_t *ptr;
 
-typedef struct
+#ifdef ESP_PLATFORM
+    const esp_partition_t *partition = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA,
+        0x40,
+        "gguf");
+    if (!partition)
+        return "no partition";
+
+    esp_partition_mmap_handle_t handle;
+    esp_err_t err = esp_partition_mmap(
+        partition,
+        0,
+        partition->size,
+        SPI_FLASH_MMAP_DATA,
+        &ptr,
+        &handle);
+    if (err != ESP_OK)
+        return "mmap failed";
+#else
+    FILE *f = fopen("gguf.gguf", "rb");
+    if (!f) return "fopen failed";
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    rewind(f);
+
+    ptr = malloc(size);
+    if (!ptr) {
+        fclose(f);
+        return "malloc failed";
+    }
+
+    if (fread((void*)ptr, 1, size, f) != size) {
+        fclose(f);
+        free((void*)ptr);
+        return "fread failed";
+    }
+
+    fclose(f);
+#endif
+
+    if (ptr->magic != 0x46554747)
+        return "bad magic";
+    if (ptr->version != 3)
+        return "unsupported version";
+
+    *gguf = ptr;
+    return NULL;
+}
+
+gguf_string_t read_gguf_string(const uint8_t **cur)
 {
-    const float *ln1_w, *ln1_b, *ln2_w, *ln2_b;
-    const quant_t *q_w, *k_w, *v_w, *out_w;
-    const float *out_b;
-    const quant_t *fc_w, *proj_w;
-    const float *fc_b, *proj_b;
-} layer_t;
+    gguf_string_t str;
+    str.len = READ(uint64_t, cur);
+    str.data = (const char*)*cur;
+    *cur += str.len;
+    return str;
+}
 
-#define MAX_SEQ 256
-
-int tokenize(const emlm_t *data, const char *text, uint16_t *tokens, int max_len)
+void print_gguf_value(gguf_type_t type, const uint8_t **cur)
 {
-    int len = strlen(text);
-    if (len > max_len)
-        return -1;
+    switch (type) {
+        case GGUF_UINT8:   printf("%u", READ(uint8_t,  cur)); break;
+        case GGUF_INT8:    printf("%d", READ(int8_t,   cur)); break;
+        case GGUF_UINT16:  printf("%u", READ(uint16_t, cur)); break;
+        case GGUF_INT16:   printf("%d", READ(int16_t,  cur)); break;
+        case GGUF_UINT32:  printf("%u", READ(uint32_t, cur)); break;
+        case GGUF_INT32:   printf("%d", READ(int32_t,  cur)); break;
+        case GGUF_UINT64:  printf("%llu", (unsigned long long)READ(uint64_t, cur)); break;
+        case GGUF_INT64:   printf("%lld", (long long)READ(int64_t, cur)); break;
+        case GGUF_FLOAT32: printf("%f", READ(float,    cur)); break;
+        case GGUF_FLOAT64: printf("%lf", READ(double,  cur)); break;
+        case GGUF_BOOL:    printf("%s", READ(uint8_t, cur) ? "true" : "false"); break;
 
-    for (int i = 0; i < len; i++)
-        tokens[i] = data->byte_to_token[(uint8_t)text[i]];
+        case GGUF_STRING: {
+            gguf_string_t s = read_gguf_string(cur);
+            printf("%.*s", (int)s.len, s.data);
+            break;
+        }
 
-    for (uint32_t m = 0; m < data->num_merges; m++)
-    {
-        uint16_t a = data->merges[m] & 0xFFFF;
-        uint16_t b = data->merges[m] >> 16;
-        uint16_t result = 256 + m;
+        case GGUF_ARRAY: {
+            gguf_type_t elem_type = READ(uint32_t, cur);
+            uint64_t count = READ(uint64_t, cur);
 
-        int new_len = 0;
-        for (int i = 0; i < len; i++)
-        {
-            if (i + 1 < len && tokens[i] == a && tokens[i + 1] == b)
-            {
-                tokens[new_len++] = result;
-                i++;
+            printf("[");
+            for (uint64_t i = 0; i < count; i++) {
+                if (i) printf(", ");
+                print_gguf_value(elem_type, cur);
             }
-            else
-            {
-                tokens[new_len++] = tokens[i];
-            }
-        }
-        len = new_len;
-    }
-    return len;
-}
-
-static int expand_token(const emlm_t *data, uint16_t token, uint8_t *out, int max_len)
-{
-    if (token < 256)
-    {
-        if (max_len < 1)
-            return -1;
-        out[0] = data->token_to_byte[token];
-        return 1;
-    }
-    uint32_t merge = data->merges[token - 256];
-    uint16_t a = merge & 0xFFFF;
-    uint16_t b = merge >> 16;
-    int la = expand_token(data, a, out, max_len);
-    if (la < 0)
-        return -1;
-    int lb = expand_token(data, b, out + la, max_len - la);
-    if (lb < 0)
-        return -1;
-    return la + lb;
-}
-
-int detokenize(const emlm_t *data, const uint16_t *tokens, int num_tokens, char *out, int max_len)
-{
-    int pos = 0;
-    for (int i = 0; i < num_tokens; i++)
-    {
-        int n = expand_token(data, tokens[i], (uint8_t *)out + pos, max_len - pos);
-        if (n < 0)
-            return -1;
-        pos += n;
-    }
-    out[pos] = '\0';
-    return pos;
-}
-
-void embedding_lookup(const emlm_t *data, const quant_t *wte, const quant_t *wpe, int token_id, int pos, float *out)
-{
-    const int8_t *tok_row = wte->w + token_id * data->hidden_size;
-    const int8_t *pos_row = wpe->w + pos * data->hidden_size;
-
-    for (int i = 0; i < data->hidden_size; i++)
-        out[i] = tok_row[i] * wte->scale + pos_row[i] * wpe->scale;
-}
-
-void layer_norm(const float *x, const float *weight, const float *bias, float *out, int n, float eps)
-{
-    float mean = 0, var = 0;
-    for (int i = 0; i < n; i++)
-        mean += x[i];
-    mean /= n;
-    for (int i = 0; i < n; i++)
-        var += (x[i] - mean) * (x[i] - mean);
-    var /= n;
-    float scale = 1.0f / sqrtf(var + eps);
-    for (int i = 0; i < n; i++)
-        out[i] = (x[i] - mean) * scale * weight[i] + bias[i];
-}
-
-void matmul_q(const float *x, const quant_t *W, float *out, int rows, int cols)
-{
-    for (int i = 0; i < rows; i++)
-    {
-        float sum = 0;
-        for (int j = 0; j < cols; j++)
-            sum += x[j] * W->w[i * cols + j];
-        out[i] = sum * W->scale;
-    }
-}
-
-float gelu(float x)
-{
-    return 0.5f * x * (1.0f + tanhf(0.7978845608f * (x + 0.044715f * x * x * x)));
-}
-
-void mlp(const emlm_t *data, const float *x, const quant_t *fc_w, const float *fc_b, const quant_t *proj_w, const float *proj_b, float *out, int hidden, int intermediate)
-{
-    float fc[data->intermediate_size];
-    matmul_q(x, fc_w, fc, intermediate, hidden);
-    for (int i = 0; i < intermediate; i++)
-        fc[i] = gelu(fc[i] + fc_b[i]);
-
-    matmul_q(fc, proj_w, out, hidden, intermediate);
-    for (int i = 0; i < hidden; i++)
-        out[i] += proj_b[i];
-}
-
-void attention_kv(const float *x, const quant_t *q_w, const quant_t *k_w,
-                  const quant_t *v_w, const quant_t *out_w, const float *out_b,
-                  float *out, int hidden, int num_heads,
-                  float *k_cache, float *v_cache, int pos)
-{
-    int head_dim = hidden / num_heads;
-    float q[hidden], kv[hidden];
-
-    matmul_q(x, q_w, q, hidden, hidden);
-
-    matmul_q(x, k_w, kv, hidden, hidden);
-    memcpy(k_cache + pos * hidden, kv, hidden * sizeof(float));
-
-    matmul_q(x, v_w, kv, hidden, hidden);
-    memcpy(v_cache + pos * hidden, kv, hidden * sizeof(float));
-
-    float attn_out[hidden];
-    memset(attn_out, 0, hidden * sizeof(float));
-
-    for (int h = 0; h < num_heads; h++)
-    {
-        float *qh = q + h * head_dim;
-        float scores[MAX_SEQ];
-        float max_s = -1e9f;
-
-        for (int t = 0; t <= pos; t++)
-        {
-            float *kh = k_cache + t * hidden + h * head_dim;
-            float s = 0;
-            for (int i = 0; i < head_dim; i++)
-                s += qh[i] * kh[i];
-            s /= sqrtf((float)head_dim);
-            scores[t] = s;
-            if (s > max_s)
-                max_s = s;
+            printf("]");
+            break;
         }
 
-        float sum = 0;
-        for (int t = 0; t <= pos; t++)
-        {
-            scores[t] = expf(scores[t] - max_s);
-            sum += scores[t];
-        }
-        for (int t = 0; t <= pos; t++)
-            scores[t] /= sum;
-
-        for (int i = 0; i < head_dim; i++)
-        {
-            float val = 0;
-            for (int t = 0; t <= pos; t++)
-                val += scores[t] * v_cache[t * hidden + h * head_dim + i];
-            attn_out[h * head_dim + i] = val;
-        }
+        default:
+            printf("<unknown>");
+            break;
     }
-
-    matmul_q(attn_out, out_w, out, hidden, hidden);
-    for (int i = 0; i < hidden; i++)
-        out[i] += out_b[i];
-}
-
-int sample_token(float *logits, int vocab_size, float temperature, int top_k)
-{
-    if (top_k > vocab_size)
-        top_k = vocab_size;
-
-    for (int i = 0; i < vocab_size; i++)
-        logits[i] /= temperature;
-
-    int idx[top_k];
-    float val[top_k];
-    for (int j = 0; j < top_k; j++)
-    {
-        int best = 0;
-        for (int i = 1; i < vocab_size; i++)
-            if (logits[i] > logits[best])
-                best = i;
-        idx[j] = best;
-        val[j] = logits[best];
-        logits[best] = -INFINITY;
-    }
-
-    float max_v = val[0];
-    float sum = 0;
-    for (int j = 0; j < top_k; j++)
-    {
-        val[j] = expf(val[j] - max_v);
-        sum += val[j];
-    }
-
-    float r = (float)esp_random() / 4294967295.0f;
-    float cum = 0;
-    for (int j = 0; j < top_k; j++)
-    {
-        cum += val[j] / sum;
-        if (r < cum)
-            return idx[j];
-    }
-    return idx[0];
-}
-
-void parse_weights(const emlm_t *data, const quant_t **wte, const quant_t **wpe,
-                   layer_t *layers, const float **lnf_w, const float **lnf_b)
-{
-    int h = data->hidden_size;
-    int inter = data->intermediate_size;
-
-    *wte = (const quant_t *)(data->merges + data->num_merges);
-    *wpe = (const quant_t *)((uint8_t *)*wte + sizeof(float) + data->vocab_size * h);
-
-    const uint8_t *ptr = (const uint8_t *)*wpe + sizeof(float) + data->max_pos * h;
-
-    for (int l = 0; l < data->num_layers; l++)
-    {
-        layers[l].ln1_w = (const float *)ptr;
-        ptr += h * sizeof(float);
-        layers[l].ln1_b = (const float *)ptr;
-        ptr += h * sizeof(float);
-        layers[l].ln2_w = (const float *)ptr;
-        ptr += h * sizeof(float);
-        layers[l].ln2_b = (const float *)ptr;
-        ptr += h * sizeof(float);
-
-        layers[l].q_w = (const quant_t *)ptr;
-        ptr += sizeof(float) + h * h;
-        layers[l].k_w = (const quant_t *)ptr;
-        ptr += sizeof(float) + h * h;
-        layers[l].v_w = (const quant_t *)ptr;
-        ptr += sizeof(float) + h * h;
-        layers[l].out_w = (const quant_t *)ptr;
-        ptr += sizeof(float) + h * h;
-        layers[l].out_b = (const float *)ptr;
-        ptr += h * sizeof(float);
-
-        layers[l].fc_w = (const quant_t *)ptr;
-        ptr += sizeof(float) + inter * h;
-        layers[l].proj_w = (const quant_t *)ptr;
-        ptr += sizeof(float) + h * inter;
-        layers[l].fc_b = (const float *)ptr;
-        ptr += inter * sizeof(float);
-        layers[l].proj_b = (const float *)ptr;
-        ptr += h * sizeof(float);
-    }
-
-    *lnf_w = (const float *)ptr;
-    ptr += h * sizeof(float);
-    *lnf_b = (const float *)ptr;
-}
-
-void generate(const emlm_t *data, const char *prompt, int max_tokens, float temperature, int top_k)
-{
-    int64_t t = esp_timer_get_time();
-    int64_t ttft = t;
-
-    int h = data->hidden_size;
-    int inter = data->intermediate_size;
-    int nl = data->num_layers;
-    int nh = data->num_heads;
-    int max_seq = MAX_SEQ;
-    if (max_seq > data->max_pos)
-        max_seq = data->max_pos;
-
-    const quant_t *wte, *wpe;
-    layer_t layers[nl];
-    const float *lnf_w, *lnf_b;
-    parse_weights(data, &wte, &wpe, layers, &lnf_w, &lnf_b);
-
-    uint16_t tokens[max_seq];
-    int prompt_len = tokenize(data, prompt, tokens, max_seq);
-    if (prompt_len < 1)
-    {
-        printf("tokenization failed\n");
-        return;
-    }
-
-    int cache_size = max_seq * h;
-    float *k_cache = calloc(nl * cache_size, sizeof(float));
-    float *v_cache = calloc(nl * cache_size, sizeof(float));
-    float *logits = malloc(data->vocab_size * sizeof(float));
-    if (!k_cache || !v_cache || !logits)
-    {
-        printf("alloc failed (need %d KB for kv cache)\n", (int)(nl * cache_size * sizeof(float) * 2 / 1024));
-        free(k_cache);
-        free(v_cache);
-        free(logits);
-        return;
-    }
-
-    printf("%s", prompt);
-    fflush(stdout);
-
-    int len = prompt_len;
-    int generated = 0;
-    float x[h];
-
-    for (int pos = 0; pos < len && pos < max_seq - 1; pos++)
-    {
-        embedding_lookup(data, wte, wpe, tokens[pos], pos, x);
-
-        for (int l = 0; l < nl; l++)
-        {
-            float *lk = k_cache + l * cache_size;
-            float *lv = v_cache + l * cache_size;
-
-            float tmp[h], out[h];
-
-            layer_norm(x, layers[l].ln1_w, layers[l].ln1_b, tmp, h, 1e-5f);
-            attention_kv(tmp, layers[l].q_w, layers[l].k_w, layers[l].v_w,
-                         layers[l].out_w, layers[l].out_b, out, h, nh, lk, lv, pos);
-            for (int i = 0; i < h; i++)
-                x[i] += out[i];
-
-            layer_norm(x, layers[l].ln2_w, layers[l].ln2_b, tmp, h, 1e-5f);
-            mlp(data, tmp, layers[l].fc_w, layers[l].fc_b,
-                layers[l].proj_w, layers[l].proj_b, out, h, inter);
-            for (int i = 0; i < h; i++)
-                x[i] += out[i];
-
-            vTaskDelay(1);
-        }
-
-        if (pos >= prompt_len - 1)
-        {
-            layer_norm(x, lnf_w, lnf_b, x, h, 1e-5f);
-            matmul_q(x, wte, logits, data->vocab_size, h);
-
-            int next = sample_token(logits, data->vocab_size, temperature, top_k);
-
-            if (pos == 0) ttft = esp_timer_get_time() - t;
-
-            char piece[1024];
-            detokenize(data, (uint16_t[]){(uint16_t)next}, 1, piece, sizeof(piece));
-            printf("%s", piece);
-            fflush(stdout);
-
-            tokens[len++] = next;
-            generated++;
-            if (generated >= max_tokens)
-                break;
-
-            vTaskDelay(1);
-        }
-    }
-
-    printf("\n[%d tokens, %.2f tps, %.2fs to first token]\n", 
-        generated, 
-        generated / ((esp_timer_get_time() - t) / 1000000.0f), 
-        ttft / 1000000.0f
-    );
-    free(k_cache);
-    free(v_cache);
-    free(logits);
 }
 
 void app_main(void)
 {
-    const esp_partition_t *part = esp_partition_find_first(
-        ESP_PARTITION_TYPE_DATA, 0x40, "emlm");
-    if (!part)
+    const gguf_t *gguf;
+    const char *err = load_gguf(&gguf);
+    if (err)
     {
-        printf("partition not found\n");
+        printf("GGUF load failed: %s\n", err);
         return;
     }
+    const uint8_t *cur = gguf->data;
+    uint32_t alignment = 32;
+    for (uint64_t i = 0; i < gguf->metadata_kv_count; i++) {
+        gguf_string_t key = read_gguf_string(&cur);
+        gguf_type_t type = READ(uint32_t, &cur);
 
-    esp_partition_mmap_handle_t mmap_handle;
-    const void *mapped;
-    esp_err_t err = esp_partition_mmap(
-        part, 0, part->size, SPI_FLASH_MMAP_DATA, &mapped, &mmap_handle);
-    if (err != ESP_OK)
-    {
-        printf("partition mmap failed: %s\n", esp_err_to_name(err));
-        return;
+        if (strcmp_key(key, "general.alignment")) {
+            alignment = READ(uint32_t, &cur);
+            continue;
+        }
+
+        printf("%.*s = ", (int)key.len, key.data);
+        print_gguf_value(type, &cur);
+        printf("\n");
     }
+    for (uint64_t i = 0; i < gguf->tensor_count; i++) {
+        gguf_string_t name = read_gguf_string(&cur);
+        uint32_t n_dims = READ(uint32_t, &cur);
 
-    const emlm_t *data = (const emlm_t *)mapped;
-    printf("%c%c%c%c vocab=%u hidden=%u layers=%u heads=%u\n",
-           data->magic[0],
-           data->magic[1],
-           data->magic[2],
-           data->magic[3],
-           data->vocab_size,
-           data->hidden_size,
-           data->num_layers,
-           data->num_heads);
-    generate(data, "Once upon a time", 100, 0.2f, 16);
+        uint64_t dims[4] = {0};
+        for (uint32_t j = 0; j < n_dims; j++)
+            dims[j] = READ(uint64_t, &cur);
+
+        uint32_t type = READ(uint32_t, &cur);
+        uint64_t offset = READ(uint64_t, &cur);
+
+        printf("%.*s: ", (int)name.len, name.data);
+        printf("dims=[");
+        for (uint32_t j = 0; j < n_dims; j++) {
+            if (j) printf(", ");
+            printf("%llu", (unsigned long long)dims[j]);
+        }
+        printf("] type=%u offset=%llu\n",
+            type,
+            (unsigned long long)offset);
+        const uint8_t *tensor_data = (const uint8_t*)(((uintptr_t)cur + alignment - 1) & ~(uintptr_t)(alignment - 1));
+    }
 }
+
+#ifndef ESP_PLATFORM
+int main(void) { app_main(); }
+#endif
