@@ -4,21 +4,42 @@ Optimized GGUF inference engine for running quantized llama models directly on m
 
 ## Quick Start
 
-### MCU
+### ESP32-S3
 
 ```bash
-# Flash the firmware
-pio run -t upload
+# Build and flash
+pio run -e esp32-s3-devkitc-1 -t upload
 
-# [ESP] Upload binary using crappy way
-python ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 115200 write_flash 0x400000 model.gguf
+# Upload the model
+python ~/.platformio/packages/tool-esptoolpy/esptool.py \
+  --chip esp32s3 \
+  --port /dev/ttyACM1 \
+  --baud 115200 \
+  write_flash 0x400000 model.gguf
 
-# Monitor output
-pio device monitor
+# Monitor
+pio device monitor -b 115200
+```
+
+### STM32H7
+
+```bash
+# Build and flash
+pio run -e stm32h743ii-devboard -t upload
+
+# Monitor
+pio device monitor -b 115200
+```
+
+To enable SD-card loading, uncomment this in `platformio.ini`:
+
+```ini
+build_flags =
+    -DEMBEDLM_SDCARD
 ```
 
 ### Linux
 
 ```bash
-cmake --build build && ./build/embedlm
+cmake --build build && EMBEDLM_MODEL_PATH=model.gguf ./build/embedlm
 ```

@@ -8,11 +8,12 @@
         {
             "name": "PlatformIO",
             "includePath": [
+                "/home/exploit/Projects/EmbedLM/include",
                 "/home/exploit/Projects/EmbedLM/src",
                 "/home/exploit/.platformio/packages/framework-espidf/components/xtensa/esp32s3/include",
                 "/home/exploit/.platformio/packages/framework-espidf/components/xtensa/include",
                 "/home/exploit/.platformio/packages/framework-espidf/components/xtensa/deprecated_include",
-                "/home/exploit/Projects/EmbedLM/.pio/build/rymcu-esp32-s3-devkitc-1/config",
+                "/home/exploit/Projects/EmbedLM/.pio/build/esp32-s3-devkitc-1/config",
                 "/home/exploit/.platformio/packages/framework-espidf/components/newlib/platform_include",
                 "/home/exploit/.platformio/packages/framework-espidf/components/freertos/config/include",
                 "/home/exploit/.platformio/packages/framework-espidf/components/freertos/config/include/freertos",
@@ -189,11 +190,12 @@
             "browse": {
                 "limitSymbolsToIncludedHeaders": true,
                 "path": [
+                    "/home/exploit/Projects/EmbedLM/include",
                     "/home/exploit/Projects/EmbedLM/src",
                     "/home/exploit/.platformio/packages/framework-espidf/components/xtensa/esp32s3/include",
                     "/home/exploit/.platformio/packages/framework-espidf/components/xtensa/include",
                     "/home/exploit/.platformio/packages/framework-espidf/components/xtensa/deprecated_include",
-                    "/home/exploit/Projects/EmbedLM/.pio/build/rymcu-esp32-s3-devkitc-1/config",
+                    "/home/exploit/Projects/EmbedLM/.pio/build/esp32-s3-devkitc-1/config",
                     "/home/exploit/.platformio/packages/framework-espidf/components/newlib/platform_include",
                     "/home/exploit/.platformio/packages/framework-espidf/components/freertos/config/include",
                     "/home/exploit/.platformio/packages/framework-espidf/components/freertos/config/include/freertos",
@@ -389,7 +391,6 @@
             "cppStandard": "gnu++23",
             "compilerPath": "/home/exploit/.platformio/packages/toolchain-xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc",
             "compilerArgs": [
-                "-mdisable-hardware-atomics",
                 "-mlongcalls",
                 ""
             ]

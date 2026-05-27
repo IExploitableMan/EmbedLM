@@ -12,8 +12,8 @@
             "type": "platformio-debug",
             "request": "launch",
             "name": "PIO Debug",
-            "executable": "/home/exploit/Projects/EmbedLM/.pio/build/rymcu-esp32-s3-devkitc-1/firmware.elf",
-            "projectEnvName": "rymcu-esp32-s3-devkitc-1",
+            "executable": "/home/exploit/Projects/EmbedLM/.pio/build/esp32-s3-devkitc-1/firmware.elf",
+            "projectEnvName": "esp32-s3-devkitc-1",
             "toolchainBinDir": "/home/exploit/.platformio/packages/toolchain-xtensa-esp-elf/bin",
             "internalConsoleOptions": "openOnSessionStart",
             "preLaunchTask": {
@@ -25,8 +25,8 @@
             "type": "platformio-debug",
             "request": "launch",
             "name": "PIO Debug (skip Pre-Debug)",
-            "executable": "/home/exploit/Projects/EmbedLM/.pio/build/rymcu-esp32-s3-devkitc-1/firmware.elf",
-            "projectEnvName": "rymcu-esp32-s3-devkitc-1",
+            "executable": "/home/exploit/Projects/EmbedLM/.pio/build/esp32-s3-devkitc-1/firmware.elf",
+            "projectEnvName": "esp32-s3-devkitc-1",
             "toolchainBinDir": "/home/exploit/.platformio/packages/toolchain-xtensa-esp-elf/bin",
             "internalConsoleOptions": "openOnSessionStart"
         },
@@ -34,8 +34,8 @@
             "type": "platformio-debug",
             "request": "launch",
             "name": "PIO Debug (without uploading)",
-            "executable": "/home/exploit/Projects/EmbedLM/.pio/build/rymcu-esp32-s3-devkitc-1/firmware.elf",
-            "projectEnvName": "rymcu-esp32-s3-devkitc-1",
+            "executable": "/home/exploit/Projects/EmbedLM/.pio/build/esp32-s3-devkitc-1/firmware.elf",
+            "projectEnvName": "esp32-s3-devkitc-1",
             "toolchainBinDir": "/home/exploit/.platformio/packages/toolchain-xtensa-esp-elf/bin",
             "internalConsoleOptions": "openOnSessionStart",
             "loadMode": "manual"

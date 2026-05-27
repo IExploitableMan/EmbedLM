@@ -1,12 +1,102 @@
 #include "gguf.h"
+#include "platform.h"
 #include "tokenizer.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef ESP_PLATFORM
+#if EMBEDLM_PLATFORM_ESP32S3
 #include <esp_partition.h>
 #include <spi_flash_mmap.h>
+#endif
+
+static char *gguf_finish_load(const gguf_header_t *ptr, const gguf_header_t **hdr,
+                              const uint8_t **data_start, const void **buf)
+{
+    if (ptr->magic != 0x46554747) return "bad magic";
+    if (ptr->version != 3) return "unsupported version";
+
+    *hdr        = ptr;
+    *data_start = ptr->data;
+    *buf        = (const void *)ptr;
+    return NULL;
+}
+
+#if EMBEDLM_PLATFORM_HOST || defined(EMBEDLM_SDCARD)
+static char *gguf_load_file(const char *path, const gguf_header_t **hdr, const uint8_t **data_start,
+                            const void **buf)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return "fopen failed";
+
+    if (fseek(f, 0, SEEK_END) != 0)
+    {
+        fclose(f);
+        return "fseek failed";
+    }
+
+    long end = ftell(f);
+    if (end < 0)
+    {
+        fclose(f);
+        return "ftell failed";
+    }
+
+    size_t size = (size_t)end;
+    rewind(f);
+
+    gguf_header_t *ptr = malloc(size);
+    if (!ptr)
+    {
+        fclose(f);
+        return "malloc failed";
+    }
+    if (fread((void *)ptr, 1, size, f) != size)
+    {
+        fclose(f);
+        free(ptr);
+        return "fread failed";
+    }
+
+    fclose(f);
+    char *err = gguf_finish_load(ptr, hdr, data_start, buf);
+    if (err) free(ptr);
+    return err;
+}
+#endif
+
+#if EMBEDLM_PLATFORM_STM32H7
+static char *gguf_load_stm32(const char *filename, const gguf_header_t **hdr,
+                             const uint8_t **data_start, const void **buf)
+{
+#if defined(EMBEDLM_SDCARD)
+    char *err = gguf_load_file(filename, hdr, data_start, buf);
+    if (!err) return NULL;
+
+    if (!strchr(filename, '/'))
+    {
+        char        sd_path[128];
+        const char *prefixes[] = {"0:/", "1:/", "/sdcard/"};
+        for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++)
+        {
+            if (snprintf(sd_path, sizeof(sd_path), "%s%s", prefixes[i], filename) >=
+                (int)sizeof(sd_path))
+                continue;
+            err = gguf_load_file(sd_path, hdr, data_start, buf);
+            if (!err) return NULL;
+        }
+    }
+
+    return err;
+#else
+    if (platform_embedded_model_start() == NULL || platform_embedded_model_end() == NULL ||
+        platform_embedded_model_end() <= platform_embedded_model_start())
+        return "embedded flash model missing";
+
+    return gguf_finish_load((const gguf_header_t *)platform_embedded_model_start(), hdr, data_start,
+                            buf);
+#endif
+}
 #endif
 
 gguf_str_t gguf_read_str(const uint8_t **cur)
@@ -72,7 +162,9 @@ void gguf_skip_value(gguf_type type, const uint8_t **cur)
 
 void gguf_free(const void *buf)
 {
-#ifndef ESP_PLATFORM
+#if EMBEDLM_PLATFORM_STM32H7
+    if (!platform_embedded_model_matches(buf)) free((void *)buf);
+#elif EMBEDLM_PLATFORM_HOST
     free((void *)buf);
 #endif
 }
@@ -82,7 +174,7 @@ char *gguf_load(const char *filename, const gguf_header_t **hdr, const uint8_t *
 {
     const gguf_header_t *ptr;
 
-#ifdef ESP_PLATFORM
+#if EMBEDLM_PLATFORM_ESP32S3
     const esp_partition_t *partition =
         esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "gguf");
     if (!partition) return "no partition";
@@ -90,34 +182,13 @@ char *gguf_load(const char *filename, const gguf_header_t **hdr, const uint8_t *
     esp_err_t err = esp_partition_mmap(partition, 0, partition->size, SPI_FLASH_MMAP_DATA,
                                        (void *)&ptr, &handle);
     if (err != ESP_OK) return "mmap failed";
+#elif EMBEDLM_PLATFORM_STM32H7
+    return gguf_load_stm32(filename, hdr, data_start, buf);
 #else
-    FILE *f = fopen(filename, "rb");
-    if (!f) return "fopen failed";
-    fseek(f, 0, SEEK_END);
-    size_t size = ftell(f);
-    rewind(f);
-    ptr = malloc(size);
-    if (!ptr)
-    {
-        fclose(f);
-        return "malloc failed";
-    }
-    if (fread((void *)ptr, 1, size, f) != size)
-    {
-        fclose(f);
-        free((void *)ptr);
-        return "fread failed";
-    }
-    fclose(f);
+    return gguf_load_file(filename, hdr, data_start, buf);
 #endif
 
-    if (ptr->magic != 0x46554747) return "bad magic";
-    if (ptr->version != 3) return "unsupported version";
-
-    *hdr        = ptr;
-    *data_start = ptr->data;
-    *buf        = (const void *)ptr;
-    return NULL;
+    return gguf_finish_load(ptr, hdr, data_start, buf);
 }
 
 char *gguf_parse_meta(const uint8_t **cur, uint64_t n_kv, gguf_model_t *model, tokenizer_t *tok,

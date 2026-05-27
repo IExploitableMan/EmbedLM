@@ -162,12 +162,17 @@ int llama_build_model(llama_model_t *m, gguf_model_t *params, gguf_tensor_info_t
     m->n_head_kv      = (int)params->n_head_kv;
     m->n_ff           = (int)params->n_ff;
     m->n_vocab        = (int)params->n_vocab;
-    m->head_dim       = m->n_embd / m->n_head;
     m->rope_freq_base = params->rope_freq_base > 0 ? params->rope_freq_base : 10000.0f;
     m->rms_norm_eps   = params->rms_norm_eps > 0 ? params->rms_norm_eps : 1e-5f;
     if (m->n_vocab <= 0)
     {
         printf("error: invalid vocab size\n");
+        return -1;
+    }
+
+    if (m->n_embd <= 0 || m->n_head <= 0 || m->n_head_kv <= 0)
+    {
+        printf("error: invalid model dimensions\n");
         return -1;
     }
 
@@ -178,6 +183,8 @@ int llama_build_model(llama_model_t *m, gguf_model_t *params, gguf_tensor_info_t
         printf("error: n_embd not divisible by n_head\n");
         return -1;
     }
+
+    m->head_dim = m->n_embd / m->n_head;
 
     m->layers = malloc(m->n_layer * sizeof(*m->layers));
     if (!m->layers) return -1;
