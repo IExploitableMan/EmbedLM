@@ -106,12 +106,7 @@ typedef struct {
         v;                                                                                         \
     })
 
-gguf_str_t gguf_read_str(const uint8_t **cur);
-int        gguf_str_eq(gguf_str_t s, const char *lit);
-uint64_t   gguf_read_scalar(gguf_type type, const uint8_t **cur);
-float      gguf_read_float(gguf_type type, const uint8_t **cur);
-void       gguf_skip_value(gguf_type type, const uint8_t **cur);
-
+int   gguf_str_eq(gguf_str_t s, const char *lit);
 void  gguf_free(const void *buf);
 char *gguf_load(const char *filename, const gguf_header_t **hdr, const uint8_t **data_start,
                 const void **buf);

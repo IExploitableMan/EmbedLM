@@ -2,12 +2,15 @@
 #include "infer.h"
 #include "platform.h"
 #include "tokenizer.h"
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #define MAX_TOKENS 200
+#define PROMPT_BUF_SIZE 256
+#define DECODE_BUF_SIZE 1024
 
 void app_main(void)
 {
@@ -110,9 +113,9 @@ void app_main(void)
         goto cleanup;
     }
 
-    int         prompt_ids[256];
+    int         prompt_ids[PROMPT_BUF_SIZE];
     const char *prompt_text = "Once upon a time";
-    int         n_prompt    = tokenizer_encode(&tok, prompt_text, prompt_ids, 256);
+    int         n_prompt    = tokenizer_encode(&tok, prompt_text, prompt_ids, PROMPT_BUF_SIZE);
     if (n_prompt <= 0)
     {
         printf("error: tokenize prompt\n");
@@ -128,7 +131,7 @@ void app_main(void)
         platform_watchdog_kick();
     }
 
-    char text[4096];
+    char text[DECODE_BUF_SIZE];
     srand((unsigned)time(NULL));
     int      token;
     uint64_t t_start = platform_now_us();
@@ -136,7 +139,7 @@ void app_main(void)
     int      n_gen   = 0;
     for (int pos = n_prompt; pos < LLAMA_MAX_CTX && n_gen < MAX_TOKENS; pos++)
     {
-        token = sample(logits, m.n_vocab, 0.8f, 40);
+        token = sample(logits, m.n_vocab, 0.8f, 40, scratch.probs);
         if (token == tok.eos_id) break;
         tokenizer_decode(&tok, &token, 1, text, sizeof(text));
         printf("%s", text);
@@ -148,8 +151,7 @@ void app_main(void)
     }
     uint64_t total_us = platform_now_us() - t_start;
     float    tps      = (float)n_gen / ((float)total_us / 1e6f);
-    printf("\n(%.2f tok/sec) (%d tokens) (%llums)\n", (double)tps, n_gen,
-           (unsigned long long)ttft / 1000);
+    printf("\n(%.2f tok/sec) (%d tokens) (%" PRIu64 "ms)\n", (double)tps, n_gen, ttft / 1000);
 
 cleanup:
     free(logits);

@@ -21,8 +21,22 @@ static inline float fp16_to_fp32(uint16_t h)
     }
     else if (exp5 == 0)
     {
-        exp8   = 0;
-        mant23 = 0;
+        if (mant10 == 0)
+        {
+            exp8   = 0;
+            mant23 = 0;
+        }
+        else
+        {
+            int exp = -14;
+            while ((mant10 & 0x400) == 0)
+            {
+                mant10 <<= 1;
+                exp--;
+            }
+            exp8   = (uint32_t)(exp + 127);
+            mant23 = (mant10 & 0x3ff) << 13;
+        }
     }
     else
     {
@@ -36,7 +50,8 @@ static inline float fp16_to_fp32(uint16_t h)
     return r;
 }
 
-static void q8_matmul(const float *x, const uint8_t *w, float *y, int n_rows, int n_cols)
+static void q8_matmul(const float *restrict x, const uint8_t *restrict w, float *restrict y,
+                      int n_rows, int n_cols)
 {
     int n_blocks = (n_rows + Q8_N - 1) / Q8_N;
 
@@ -60,20 +75,27 @@ static void q8_matmul(const float *x, const uint8_t *w, float *y, int n_rows, in
     }
 }
 
-static void rms_norm(const float *x, const float *weight, float *y, int n, float eps)
+static void rms_norm(const float *restrict x, const float *restrict weight, float *restrict y,
+                     int n, float eps)
 {
-    float ss = 0;
-    for (int i = 0; i < n; i++) ss += x[i] * x[i];
+    float ss = 0, comp = 0;
+    for (int i = 0; i < n; i++)
+    {
+        float val  = x[i] * x[i] - comp;
+        float next = ss + val;
+        comp       = (next - ss) - val;
+        ss         = next;
+    }
     float scale = 1.0f / sqrtf(ss / n + eps);
     for (int i = 0; i < n; i++) y[i] = x[i] * scale * weight[i];
 }
 
 static void rope(float *q, float *k, int n_head, int n_head_kv, int head_dim, int pos,
-                 float freq_base)
+                 const float *inv_freq)
 {
     for (int d = 0; d < head_dim; d += 2)
     {
-        float freq = powf(freq_base, -2.0f * d / head_dim);
+        float freq = inv_freq[d / 2];
         float th   = pos * freq;
         float c    = cosf(th);
         float s    = sinf(th);
@@ -89,10 +111,10 @@ static void rope(float *q, float *k, int n_head, int n_head_kv, int head_dim, in
         for (int h = 0; h < n_head_kv; h++)
         {
             int   off      = h * head_dim;
-            float k0       = k[off + d];
-            float k1       = k[off + d + 1];
-            k[off + d]     = k0 * c - k1 * s;
-            k[off + d + 1] = k0 * s + k1 * c;
+            float kv0      = k[off + d];
+            float kv1      = k[off + d + 1];
+            k[off + d]     = kv0 * c - kv1 * s;
+            k[off + d + 1] = kv0 * s + kv1 * c;
         }
     }
 }
@@ -186,8 +208,19 @@ int llama_build_model(llama_model_t *m, gguf_model_t *params, gguf_tensor_info_t
 
     m->head_dim = m->n_embd / m->n_head;
 
+    int half_dim = m->head_dim / 2;
+    m->inv_freq  = malloc(half_dim * sizeof(float));
+    if (!m->inv_freq) return -1;
+    for (int i = 0; i < half_dim; i++)
+        m->inv_freq[i] = powf(m->rope_freq_base, -2.0f * (float)i / (float)m->head_dim);
+
     m->layers = malloc(m->n_layer * sizeof(*m->layers));
-    if (!m->layers) return -1;
+    if (!m->layers)
+    {
+        free(m->inv_freq);
+        m->inv_freq = NULL;
+        return -1;
+    }
     memset(m->layers, 0, m->n_layer * sizeof(*m->layers));
 
     for (uint64_t i = 0; i < n_tensors; i++)
@@ -195,7 +228,7 @@ int llama_build_model(llama_model_t *m, gguf_model_t *params, gguf_tensor_info_t
         const char *name = tensors[i].name.data;
         size_t      nlen = tensors[i].name.len;
 
-#define TMATCH(s) (nlen == strlen(s) && memcmp(name, s, strlen(s)) == 0)
+#define TMATCH(s) (nlen == sizeof(s) - 1 && memcmp(name, s, sizeof(s) - 1) == 0)
 
         if (TMATCH("output_norm.weight")) m->output_norm = (const float *)tensors[i].data;
         else if (TMATCH("output.weight"))
@@ -270,6 +303,8 @@ int llama_build_model(llama_model_t *m, gguf_model_t *params, gguf_tensor_info_t
         printf("error: missing output_norm or token_embd\n");
         free(m->layers);
         m->layers = NULL;
+        free(m->inv_freq);
+        m->inv_freq = NULL;
         return -1;
     }
     for (int l = 0; l < m->n_layer; l++)
@@ -281,6 +316,8 @@ int llama_build_model(llama_model_t *m, gguf_model_t *params, gguf_tensor_info_t
             printf("error: missing layer %d tensor\n", l);
             free(m->layers);
             m->layers = NULL;
+            free(m->inv_freq);
+            m->inv_freq = NULL;
             return -1;
         }
     }
@@ -290,8 +327,10 @@ int llama_build_model(llama_model_t *m, gguf_model_t *params, gguf_tensor_info_t
 
 void llama_free_model(llama_model_t *m)
 {
+    free(m->inv_freq);
     free(m->layers);
-    m->layers = NULL;
+    m->inv_freq = NULL;
+    m->layers   = NULL;
 }
 
 int llama_scratch_init(llama_scratch_t *s, const llama_model_t *m)
@@ -307,8 +346,9 @@ int llama_scratch_init(llama_scratch_t *s, const llama_model_t *m)
     s->gate     = malloc(m->n_ff * sizeof(float));
     s->up       = malloc(m->n_ff * sizeof(float));
     s->score    = malloc(LLAMA_MAX_CTX * sizeof(float));
+    s->probs    = malloc(m->n_vocab * sizeof(float));
     if (!s->x || !s->buf || !s->attn_out || !s->q || !s->k || !s->v || !s->gate || !s->up ||
-        !s->score)
+        !s->score || !s->probs)
     {
         llama_scratch_free(s);
         return -1;
@@ -327,9 +367,10 @@ void llama_scratch_free(llama_scratch_t *s)
     free(s->gate);
     free(s->up);
     free(s->score);
+    free(s->probs);
     s->x = s->buf = s->attn_out = NULL;
     s->q = s->k = s->v = NULL;
-    s->gate = s->up = s->score = NULL;
+    s->gate = s->up = s->score = s->probs = NULL;
 }
 
 int kv_cache_init(kv_cache_t *cache, int n_layer, int n_head_kv, int head_dim, int capacity)
@@ -393,7 +434,7 @@ void llama_forward(llama_model_t *m, kv_cache_t *cache, llama_scratch_t *scratch
         const int8_t *qs  = (const int8_t *)(emb_data + (size_t)b * Q8_BLOCK_SIZE + 2);
         int           rem = n_embd - b * Q8_N;
         int           n   = rem < Q8_N ? rem : Q8_N;
-        for (int k = 0; k < n; k++) x[b * Q8_N + k] = qs[k] * d;
+        for (int ki = 0; ki < n; ki++) x[b * Q8_N + ki] = qs[ki] * d;
     }
 
     int kv_stride    = n_head_kv * head_dim;
@@ -408,7 +449,7 @@ void llama_forward(llama_model_t *m, kv_cache_t *cache, llama_scratch_t *scratch
         q8_matmul(buf, m->layers[l].wk, k, n_embd, nk);
         q8_matmul(buf, m->layers[l].wv, v, n_embd, nk);
 
-        rope(q, k, n_head, n_head_kv, head_dim, pos, m->rope_freq_base);
+        rope(q, k, n_head, n_head_kv, head_dim, pos, m->inv_freq);
 
         int layer_off = l * kv_layer_off;
         memcpy(cache->k + layer_off + (size_t)pos * kv_stride, k, nk * sizeof(float));
@@ -427,9 +468,7 @@ void llama_forward(llama_model_t *m, kv_cache_t *cache, llama_scratch_t *scratch
         q8_matmul(buf, m->layers[l].wgate, gate, n_embd, n_ff);
         q8_matmul(buf, m->layers[l].wup, up, n_embd, n_ff);
 
-        for (int i = 0; i < n_ff; i++) gate[i] = silu(gate[i]);
-
-        for (int i = 0; i < n_ff; i++) gate[i] *= up[i];
+        for (int i = 0; i < n_ff; i++) gate[i] = silu(gate[i]) * up[i];
 
         q8_matmul(gate, m->layers[l].wdown, buf, n_ff, n_embd);
 
@@ -442,7 +481,7 @@ void llama_forward(llama_model_t *m, kv_cache_t *cache, llama_scratch_t *scratch
     q8_matmul(buf, output_w, logits, n_embd, n_vocab);
 }
 
-int sample(float *logits, int n_vocab, float temp, int top_k)
+int sample(float *logits, int n_vocab, float temp, int top_k, float *probs)
 {
     if (temp <= 0.0f || top_k == 1)
     {
@@ -452,19 +491,26 @@ int sample(float *logits, int n_vocab, float temp, int top_k)
         return best;
     }
 
-    for (int i = 0; i < n_vocab; i++) logits[i] /= temp;
+    if (!probs)
+    {
+        int best = 0;
+        for (int i = 1; i < n_vocab; i++)
+            if (logits[i] > logits[best]) best = i;
+        return best;
+    }
+    for (int i = 0; i < n_vocab; i++) probs[i] = logits[i] / temp;
 
-    float mx = logits[0];
+    float mx = probs[0];
     for (int i = 1; i < n_vocab; i++)
-        if (logits[i] > mx) mx = logits[i];
+        if (probs[i] > mx) mx = probs[i];
     float sum = 0;
     for (int i = 0; i < n_vocab; i++)
     {
-        logits[i] = expf(logits[i] - mx);
-        sum += logits[i];
+        probs[i] = expf(probs[i] - mx);
+        sum += probs[i];
     }
     float inv = 1.0f / sum;
-    for (int i = 0; i < n_vocab; i++) logits[i] *= inv;
+    for (int i = 0; i < n_vocab; i++) probs[i] *= inv;
 
     if (top_k > 0 && top_k < n_vocab)
     {
@@ -474,7 +520,7 @@ int sample(float *logits, int n_vocab, float temp, int top_k)
             float mid = (lo + hi) * 0.5f;
             int   cnt = 0;
             for (int i = 0; i < n_vocab; i++)
-                if (logits[i] >= mid) cnt++;
+                if (probs[i] >= mid) cnt++;
             if (cnt >= top_k) lo = mid;
             else
                 hi = mid;
@@ -482,19 +528,24 @@ int sample(float *logits, int n_vocab, float temp, int top_k)
         sum = 0;
         for (int i = 0; i < n_vocab; i++)
         {
-            if (logits[i] < lo) logits[i] = 0;
-            sum += logits[i];
+            if (probs[i] < lo) probs[i] = 0;
+            sum += probs[i];
         }
         inv = 1.0f / sum;
-        for (int i = 0; i < n_vocab; i++) logits[i] *= inv;
+        for (int i = 0; i < n_vocab; i++) probs[i] *= inv;
     }
 
     float r   = (float)rand() / (float)RAND_MAX;
     float cum = 0;
+    int   idx = n_vocab - 1;
     for (int i = 0; i < n_vocab; i++)
     {
-        cum += logits[i];
-        if (r < cum) return i;
+        cum += probs[i];
+        if (r < cum)
+        {
+            idx = i;
+            break;
+        }
     }
-    return n_vocab - 1;
+    return idx;
 }

@@ -99,7 +99,7 @@ static char *gguf_load_stm32(const char *filename, const gguf_header_t **hdr,
 }
 #endif
 
-gguf_str_t gguf_read_str(const uint8_t **cur)
+static gguf_str_t gguf_read_str(const uint8_t **cur)
 {
     gguf_str_t s;
     s.len  = GGUF_READ(uint64_t, cur);
@@ -114,18 +114,18 @@ int gguf_str_eq(gguf_str_t s, const char *lit)
     return s.len == len && memcmp(s.data, lit, len) == 0;
 }
 
-uint64_t gguf_read_scalar(gguf_type type, const uint8_t **cur)
+static uint64_t gguf_read_scalar(gguf_type type, const uint8_t **cur)
 {
     switch (type)
     {
         case GGUF_UINT8: return GGUF_READ(uint8_t, cur);
-        case GGUF_INT8: return (int8_t)GGUF_READ(uint8_t, cur);
+        case GGUF_INT8: return (uint64_t)(int8_t)GGUF_READ(int8_t, cur);
         case GGUF_UINT16: return GGUF_READ(uint16_t, cur);
-        case GGUF_INT16: return (int16_t)GGUF_READ(uint16_t, cur);
+        case GGUF_INT16: return (uint64_t)(int16_t)GGUF_READ(int16_t, cur);
         case GGUF_UINT32: return GGUF_READ(uint32_t, cur);
-        case GGUF_INT32: return (int32_t)GGUF_READ(uint32_t, cur);
+        case GGUF_INT32: return (uint64_t)(int32_t)GGUF_READ(int32_t, cur);
         case GGUF_UINT64: return GGUF_READ(uint64_t, cur);
-        case GGUF_INT64: return (int64_t)GGUF_READ(uint64_t, cur);
+        case GGUF_INT64: return (uint64_t)GGUF_READ(int64_t, cur);
         case GGUF_FLOAT32: return GGUF_READ(uint32_t, cur);
         case GGUF_FLOAT64: return GGUF_READ(uint64_t, cur);
         case GGUF_BOOL: return GGUF_READ(uint8_t, cur);
@@ -133,7 +133,7 @@ uint64_t gguf_read_scalar(gguf_type type, const uint8_t **cur)
     }
 }
 
-float gguf_read_float(gguf_type type, const uint8_t **cur)
+static float gguf_read_float(gguf_type type, const uint8_t **cur)
 {
     switch (type)
     {
@@ -143,7 +143,7 @@ float gguf_read_float(gguf_type type, const uint8_t **cur)
     }
 }
 
-void gguf_skip_value(gguf_type type, const uint8_t **cur)
+static void gguf_skip_value(gguf_type type, const uint8_t **cur)
 {
     if (type == GGUF_STRING)
     {

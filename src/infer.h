@@ -16,18 +16,20 @@ typedef struct {
     float *gate;
     float *up;
     float *score;
+    float *probs;
 } llama_scratch_t;
 
 typedef struct {
-    int   n_layer;
-    int   n_embd;
-    int   n_head;
-    int   n_head_kv;
-    int   n_ff;
-    int   n_vocab;
-    int   head_dim;
-    float rope_freq_base;
-    float rms_norm_eps;
+    int    n_layer;
+    int    n_embd;
+    int    n_head;
+    int    n_head_kv;
+    int    n_ff;
+    int    n_vocab;
+    int    head_dim;
+    float  rope_freq_base;
+    float  rms_norm_eps;
+    float *inv_freq;
 
     const float   *output_norm;
     const uint8_t *token_embd;
@@ -65,5 +67,5 @@ int  kv_cache_init(kv_cache_t *cache, int n_layer, int n_head_kv, int head_dim, 
 void kv_cache_free(kv_cache_t *cache);
 void llama_forward(llama_model_t *m, kv_cache_t *cache, llama_scratch_t *scratch, int token,
                    int pos, float *logits);
-int  sample(float *logits, int n_vocab, float temp, int top_k);
+int  sample(float *logits, int n_vocab, float temp, int top_k, float *probs);
 #endif /* INFER_H */
