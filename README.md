@@ -1,28 +1,45 @@
 # EmbedLM
 
-Optimized inference engine for running quantized GPTNeo models directly on ESP32 microcontrollers. It features INT8 quantization and memory-mapped flash execution to enable LLMs on embedded hardware.
+Optimized GGUF inference engine for running quantized llama models directly on microcontrollers.
 
 ## Quick Start
 
+### ESP32-S3
+
 ```bash
-# Create venv
-python -m venv .venv
+# Build and flash
+pio run -e esp32-s3-devkitc-1 -t upload
 
-# Activate venv
-source .venv/bin/activate
+# Upload the model
+python ~/.platformio/packages/tool-esptoolpy/esptool.py \
+  --chip esp32s3 \
+  --port /dev/ttyACM1 \
+  --baud 115200 \
+  write_flash 0x400000 model.gguf
 
-# Install dependencies
-pip install -r requirements.txt
+# Monitor
+pio device monitor -b 115200
+```
 
-# Prepare and quantize the model
-python pack.py
+### STM32H7
 
-# Flash the firmware
-pio run -t upload
+```bash
+# Build and flash
+pio run -e stm32h743ii-devboard -t upload
 
-# Upload binary using crappy way
-python ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 --port /dev/ttyACM1 --baud 115200 write_flash 0x400000 emlm.bin
+# Monitor
+pio device monitor -b 115200
+```
 
-# Monitor output
-pio device monitor
+To enable SD-card loading, uncomment this in `platformio.ini`:
+
+```ini
+build_flags =
+    -DEMBEDLM_SDCARD
+```
+
+### Linux
+
+```bash
+cmake --build build && EMBEDLM_MODEL_PATH=model.gguf ./build/embedlm
 ```
